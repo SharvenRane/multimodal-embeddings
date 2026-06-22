@@ -1,57 +1,45 @@
+"""Projection heads and the joint aligner.
+
+Each view has its own encoder that maps the raw view into a shared embedding
+space. Embeddings are L2 normalised so cosine similarity is just a dot product.
 """
-Multimodal Embeddings - Model Architecture
-"""
+
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
-import timm
-from einops import rearrange
+import torch.nn.functional as F
 
 
-class MultimodalEmbeddings(nn.Module):
-    """
-    Main model for multimodal embeddings.
-    """
+class ProjectionHead(nn.Module):
+    """A small MLP that projects one view into the shared embedding space."""
 
-    def __init__(self, config):
+    def __init__(self, in_dim: int, embed_dim: int = 32, hidden_dim: int = 64):
         super().__init__()
-        self.config = config
-        self.encoder = timm.create_model(
-            config.backbone,
-            pretrained=config.pretrained,
-            features_only=True
-        )
-        self.head = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(self.encoder.feature_info[-1]["num_chs"], config.num_classes)
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, embed_dim),
         )
 
-    def forward(self, x):
-        features = self.encoder(x)
-        out = self.head(features[-1])
-        return out
-
-    def extract_features(self, x):
-        features = self.encoder(x)
-        pooled = nn.functional.adaptive_avg_pool2d(features[-1], 1)
-        return pooled.flatten(1)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        z = self.net(x)
+        return F.normalize(z, dim=-1)
 
 
-def build_model(config):
-    model = MultimodalEmbeddings(config)
-    if config.get("checkpoint"):
-        state = torch.load(config.checkpoint, map_location="cpu")
-        model.load_state_dict(state["model"])
-    return model
+class MultimodalAligner(nn.Module):
+    """Holds one projection head per view and exposes both embeddings."""
 
-# update 1
+    def __init__(self, dim_a: int, dim_b: int, embed_dim: int = 32, hidden_dim: int = 64):
+        super().__init__()
+        self.head_a = ProjectionHead(dim_a, embed_dim, hidden_dim)
+        self.head_b = ProjectionHead(dim_b, embed_dim, hidden_dim)
 
-# update 2
+    def encode_a(self, x: torch.Tensor) -> torch.Tensor:
+        return self.head_a(x)
 
-# update 5
+    def encode_b(self, x: torch.Tensor) -> torch.Tensor:
+        return self.head_b(x)
 
-# update 6
-
-# update 9
-
-# update 13
+    def forward(self, view_a: torch.Tensor, view_b: torch.Tensor):
+        return self.encode_a(view_a), self.encode_b(view_b)
